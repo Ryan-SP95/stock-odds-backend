@@ -11,7 +11,7 @@ const FMP_API_KEY = process.env.FMP_API_KEY;
 
 // --- Fetch FMP data ---
 async function fetchFMP(endpoint) {
-  const url = `https://financialmodelingprep.com/api/v3/${endpoint}&apikey=${FMP_API_KEY}`;
+  const url = `https://financialmodelingprep.com/stable/${endpoint}&apikey=${FMP_API_KEY}`;
   const res = await fetch(url);
   if (!res.ok) return null;
   return res.json();
@@ -20,9 +20,9 @@ async function fetchFMP(endpoint) {
 async function getFinancialData(ticker) {
   try {
     const [profile, ratios, prices, earnings] = await Promise.all([
-      fetchFMP(`profile/${ticker}?`),
-      fetchFMP(`ratios/${ticker}?limit=1`),
-      fetchFMP(`historical-price-full/${ticker}?timeseries=30`),
+      fetchFMP(`profile?symbol=${ticker}`),
+      fetchFMP(`ratios?symbol=${ticker}&limit=1`),
+      fetchFMP(`historical-price-full?symbol=${ticker}&timeseries=30`),
       fetchFMP(`earning_calendar?symbol=${ticker}`),
     ]);
 
