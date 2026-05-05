@@ -4,6 +4,7 @@ const cors = require("cors");
 const app = express();
 app.use(cors());
 app.use(express.json());
+console.log("ENV CHECK — FMP key exists:", !!process.env.FMP_API_KEY, "Gemini key exists:", !!process.env.GEMINI_API_KEY);
 
 // --- API keys from environment variables ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
