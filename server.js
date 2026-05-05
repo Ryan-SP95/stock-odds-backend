@@ -19,31 +19,48 @@ async function fetchFMP(endpoint) {
 
 async function getFinancialData(ticker) {
   try {
-    const [profile, ratios, prices, earnings] = await Promise.all([
-      fetchFMP(`profile?symbol=${ticker}`),
-      fetchFMP(`ratios?symbol=${ticker}&limit=1`),
-      fetchFMP(`historical-price-full?symbol=${ticker}&timeseries=30`),
-      fetchFMP(`earning_calendar?symbol=${ticker}`),
-    ]);
+    // Fetch profile first — this is the most important one
+    let profile = null;
+    try {
+      profile = await fetchFMP(`profile?symbol=${ticker}`);
+    } catch (e) { console.error("FMP profile error:", e.message); }
 
-    const p = profile?.[0] || {};
-    const r = ratios?.[0] || {};
+    // Try other endpoints but don't let them block
+    let ratios = null;
+    try {
+      ratios = await fetchFMP(`ratios?symbol=${ticker}&limit=1`);
+    } catch (e) { console.error("FMP ratios error:", e.message); }
+
+    let prices = null;
+    try {
+      prices = await fetchFMP(`historical-price-full?symbol=${ticker}&timeseries=30`);
+    } catch (e) { console.error("FMP prices error:", e.message); }
+
+    let earnings = null;
+    try {
+      earnings = await fetchFMP(`earning_calendar?symbol=${ticker}`);
+    } catch (e) { console.error("FMP earnings error:", e.message); }
+
+    const p = Array.isArray(profile) ? profile[0] : profile || {};
+    const r = Array.isArray(ratios) ? ratios[0] : ratios || {};
     const priceHistory = prices?.historical?.slice(0, 10) || [];
-    const earningsData = earnings?.slice(0, 2) || [];
+    const earningsData = Array.isArray(earnings) ? earnings.slice(0, 2) : [];
+
+    console.log("FMP price for", ticker, ":", p.price);
 
     return {
       profile: {
         companyName: p.companyName || ticker,
         sector: p.sector || "Unknown",
         industry: p.industry || "Unknown",
-        marketCap: p.mktCap,
+        marketCap: p.marketCap || p.mktCap,
         price: p.price,
         beta: p.beta,
-        volAvg: p.volAvg,
+        volAvg: p.volAvg || p.averageVolume,
       },
       ratios: {
-        peRatio: r.priceEarningsRatio,
-        debtToEquity: r.debtEquityRatio,
+        peRatio: r.priceEarningsRatio || r.peRatio,
+        debtToEquity: r.debtEquityRatio || r.debtToEquity,
         currentRatio: r.currentRatio,
         returnOnEquity: r.returnOnEquity,
         grossProfitMargin: r.grossProfitMargin,
