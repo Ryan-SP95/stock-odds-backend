@@ -9,109 +9,93 @@ app.use(express.json());
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FMP_API_KEY = process.env.FMP_API_KEY;
 
-// --- Fetch FMP data ---
-async function fetchFMP(endpoint) {
-  const url = `https://financialmodelingprep.com/stable/${endpoint}&apikey=${FMP_API_KEY}`;
-  console.log("FMP calling:", endpoint.split("&")[0]);
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("FMP error for", endpoint.split("&")[0], ":", res.status, errText.slice(0, 200));
-      return null;
-    }
-    const data = await res.json();
-    console.log("FMP success:", endpoint.split("&")[0]);
-    return data;
-  } catch (err) {
-    console.error("FMP fetch exception:", err.message);
+// --- Fetch real stock data from FMP ---
+async function getStockData(ticker) {
+  if (!FMP_API_KEY) {
+    console.log("No FMP key — skipping real data");
     return null;
   }
-}
 
-async function getFinancialData(ticker) {
   try {
-    // Fetch profile first — this is the most important one
-    let profile = null;
+    // Profile — gives us price, market cap, sector, beta
+    const profileRes = await fetch(
+      `https://financialmodelingprep.com/stable/profile?symbol=${ticker}&apikey=${FMP_API_KEY}`
+    );
+
+    if (!profileRes.ok) {
+      console.error("FMP profile failed:", profileRes.status);
+      return null;
+    }
+
+    const profileData = await profileRes.json();
+    console.log("FMP raw profile type:", typeof profileData, Array.isArray(profileData));
+
+    // Handle both array and object responses
+    const profile = Array.isArray(profileData) ? profileData[0] : profileData;
+
+    if (!profile || !profile.price) {
+      console.error("FMP profile missing price:", JSON.stringify(profile).slice(0, 200));
+      return null;
+    }
+
+    console.log("FMP got price for", ticker, ":", profile.price);
+
+    // Earnings — gives us upcoming dates
+    let earnings = [];
     try {
-      profile = await fetchFMP(`profile?symbol=${ticker}`);
-    } catch (e) { console.error("FMP profile error:", e.message); }
-
-    // Try other endpoints but don't let them block
-    let ratios = null;
-    try {
-      ratios = await fetchFMP(`ratios?symbol=${ticker}&limit=1`);
-    } catch (e) { console.error("FMP ratios error:", e.message); }
-
-    let prices = null;
-    try {
-      prices = await fetchFMP(`historical-price-full?symbol=${ticker}&timeseries=30`);
-    } catch (e) { console.error("FMP prices error:", e.message); }
-
-    let earnings = null;
-    try {
-      earnings = await fetchFMP(`earning_calendar?symbol=${ticker}`);
-    } catch (e) { console.error("FMP earnings error:", e.message); }
-
-    const p = Array.isArray(profile) ? profile[0] : profile || {};
-    const r = Array.isArray(ratios) ? ratios[0] : ratios || {};
-    const priceHistory = prices?.historical?.slice(0, 10) || [];
-    const earningsData = Array.isArray(earnings) ? earnings.slice(0, 2) : [];
-
-    console.log("FMP price for", ticker, ":", p.price);
+      const earningsRes = await fetch(
+        `https://financialmodelingprep.com/stable/earning_calendar?symbol=${ticker}&apikey=${FMP_API_KEY}`
+      );
+      if (earningsRes.ok) {
+        const earningsData = await earningsRes.json();
+        earnings = Array.isArray(earningsData) ? earningsData.slice(0, 2) : [];
+        console.log("FMP got", earnings.length, "earnings dates");
+      }
+    } catch (e) {
+      console.log("FMP earnings failed (non-critical):", e.message);
+    }
 
     return {
-      profile: {
-        companyName: p.companyName || ticker,
-        sector: p.sector || "Unknown",
-        industry: p.industry || "Unknown",
-        marketCap: p.marketCap || p.mktCap,
-        price: p.price,
-        beta: p.beta,
-        volAvg: p.volAvg || p.averageVolume,
-      },
-      ratios: {
-        peRatio: r.priceEarningsRatio || r.peRatio,
-        debtToEquity: r.debtEquityRatio || r.debtToEquity,
-        currentRatio: r.currentRatio,
-        returnOnEquity: r.returnOnEquity,
-        grossProfitMargin: r.grossProfitMargin,
-        netProfitMargin: r.netProfitMargin,
-      },
-      recentPrices: priceHistory.map((d) => ({
-        date: d.date,
-        close: d.close,
-        changePercent: d.changePercent,
-      })),
-      earnings: earningsData,
+      companyName: profile.companyName,
+      price: profile.price,
+      marketCap: profile.marketCap || profile.mktCap,
+      sector: profile.sector,
+      industry: profile.industry,
+      beta: profile.beta,
+      range: profile.range,
+      volAvg: profile.volAvg || profile.averageVolume,
+      lastDividend: profile.lastDividend || profile.lastDiv,
+      change: profile.change,
+      changePercent: profile.changePercent || profile.changesPercentage,
+      earnings: earnings,
     };
   } catch (err) {
-    console.error("FMP fetch error:", err.message);
+    console.error("FMP error:", err.message);
     return null;
   }
 }
 
 // --- Scoring prompt ---
-function scoringPrompt(ticker, fmpData) {
+function scoringPrompt(ticker, stockData) {
   let dataSection = "";
 
-  if (fmpData) {
+  if (stockData) {
     dataSection = `
-Here is real, current financial data for ${ticker}:
+Here is REAL, CURRENT market data for ${ticker}. Use these numbers as your primary source:
 
-COMPANY PROFILE:
-${JSON.stringify(fmpData.profile, null, 2)}
+Company: ${stockData.companyName}
+Current Price: $${stockData.price}
+Market Cap: $${(stockData.marketCap / 1e9).toFixed(1)}B
+Sector: ${stockData.sector}
+Industry: ${stockData.industry}
+Beta: ${stockData.beta}
+52-Week Range: ${stockData.range}
+Avg Volume: ${stockData.volAvg ? stockData.volAvg.toLocaleString() : "N/A"}
+Today's Change: ${stockData.changePercent ? stockData.changePercent.toFixed(2) + "%" : "N/A"}
+Last Dividend: $${stockData.lastDividend || "N/A"}
+${stockData.earnings.length > 0 ? "Next Earnings: " + stockData.earnings[0].date : "Next Earnings: Unknown"}
 
-KEY FINANCIAL RATIOS:
-${JSON.stringify(fmpData.ratios, null, 2)}
-
-RECENT PRICE DATA (last 10 trading days):
-${JSON.stringify(fmpData.recentPrices, null, 2)}
-
-UPCOMING EARNINGS:
-${JSON.stringify(fmpData.earnings, null, 2)}
-
-Use this data as the primary basis for your scoring. The current stock price is $${fmpData.profile.price}.
+IMPORTANT: The current price is $${stockData.price}. Use this exact price in your response.
 `;
   } else {
     dataSection = `Research the stock ticker "${ticker}" using your knowledge of current market data.`;
@@ -129,7 +113,7 @@ Score these categories 1-100:
 
 Also provide:
 - direction: "LONG" or "SHORT"
-- currentPrice: current stock price as a number (use the real price from the data above if available)
+- currentPrice: must be exactly ${stockData ? stockData.price : "the current market price"}
 - targetPrice: realistic price target as a number
 - horizon: one of "1-2 months", "2-3 months", "3-4 months", "4-6 months"
 - companyName: full company name
@@ -148,22 +132,21 @@ app.post("/api/analyze", async (req, res) => {
   }
 
   const t = ticker.trim().toUpperCase();
+  console.log("--- Analyzing:", t, "---");
 
   try {
-    // Step 1: Pull real financial data from FMP (if key available)
-    let fmpData = null;
-    if (FMP_API_KEY) {
-      fmpData = await getFinancialData(t);
-    }
+    // Step 1: Get real stock data from FMP
+    const stockData = await getStockData(t);
+    console.log("FMP result:", stockData ? "Got data, price=" + stockData.price : "No data");
 
-    // Step 2: Send data to Gemini for scoring
+    // Step 2: Send to Gemini for scoring
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: scoringPrompt(t, fmpData) }] }],
+          contents: [{ parts: [{ text: scoringPrompt(t, stockData) }] }],
           generationConfig: { temperature: 0 },
         }),
       }
@@ -190,14 +173,15 @@ app.post("/api/analyze", async (req, res) => {
     const cleaned = text.replace(/```json|```/g, "").trim();
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
+      console.error("Could not parse Gemini response:", cleaned.slice(0, 300));
       return res.status(500).json({ error: "Could not parse AI response" });
     }
 
     const scores = JSON.parse(jsonMatch[0]);
 
-    // Use FMP price if available (more accurate than Gemini's guess)
-    const currentPrice =
-      fmpData?.profile?.price || scores.currentPrice;
+    // ALWAYS use FMP price if available — override whatever Gemini says
+    const currentPrice = stockData?.price || scores.currentPrice;
+    console.log("Final price:", currentPrice, "(FMP:", stockData?.price, "Gemini:", scores.currentPrice, ")");
 
     // Compute overall score
     const overall = Math.round(
@@ -214,9 +198,9 @@ app.post("/api/analyze", async (req, res) => {
     );
 
     // Return result
-    res.json({
+    const result = {
       ticker: t,
-      companyName: scores.companyName || fmpData?.profile?.companyName || t,
+      companyName: scores.companyName || stockData?.companyName || t,
       direction: scores.direction,
       currentPrice: currentPrice,
       targetPrice: scores.targetPrice,
@@ -231,7 +215,11 @@ app.post("/api/analyze", async (req, res) => {
         risk: scores.risk,
         insider: scores.insider,
       },
-    });
+    };
+
+    console.log("--- Result for", t, ": price=$" + currentPrice, "direction=" + scores.direction, "---");
+    res.json(result);
+
   } catch (err) {
     console.error("Server error:", err);
     res.status(500).json({ error: "Something went wrong" });
