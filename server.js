@@ -12,9 +12,21 @@ const FMP_API_KEY = process.env.FMP_API_KEY;
 // --- Fetch FMP data ---
 async function fetchFMP(endpoint) {
   const url = `https://financialmodelingprep.com/stable/${endpoint}&apikey=${FMP_API_KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.json();
+  console.log("FMP calling:", endpoint.split("&")[0]);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("FMP error for", endpoint.split("&")[0], ":", res.status, errText.slice(0, 200));
+      return null;
+    }
+    const data = await res.json();
+    console.log("FMP success:", endpoint.split("&")[0]);
+    return data;
+  } catch (err) {
+    console.error("FMP fetch exception:", err.message);
+    return null;
+  }
 }
 
 async function getFinancialData(ticker) {
