@@ -278,14 +278,13 @@ async function getInsiderData(ticker) {
   const SEC_UA = "TheOddsAlgo/1.1 (ghost.cited.chronicals@gmail.com)";
   const headers = { "User-Agent": SEC_UA, "Accept": "application/json" };
 
+  console.log(`--- SEC DEBUG: Checking ${ticker} ---`);
+
   try {
     // Step 1: Get CIK from ticker
-    const tickerMapRes = await fetch(
-      "https://www.sec.gov/files/company_tickers.json",
-      { headers }
-    );
+    const tickerMapRes = await fetch("https://www.sec.gov/files/company_tickers.json", { headers });
     if (!tickerMapRes.ok) {
-      console.log("SEC ticker map failed:", tickerMapRes.status);
+      console.log("SEC DEBUG: Ticker map fetch failed:", tickerMapRes.status);
       return null;
     }
 
@@ -301,55 +300,51 @@ async function getInsiderData(ticker) {
     }
 
     if (!cik) {
-      console.log("SEC EDGAR: no CIK found for", ticker);
+      console.log(`SEC DEBUG: No CIK found for ${ticker}`);
       return null;
     }
 
+    console.log(`SEC DEBUG: CIK found: ${cik}`);
+
     const paddedCik = cik.padStart(10, "0");
-    console.log("SEC EDGAR: CIK for", ticker, "=", paddedCik);
 
     // Step 2: Get recent filings
-    const filingsRes = await fetch(
-      `https://data.sec.gov/submissions/CIK${paddedCik}.json`,
-      { headers }
-    );
+    const filingsRes = await fetch(`https://data.sec.gov/submissions/CIK${paddedCik}.json`, { headers });
     if (!filingsRes.ok) {
-      console.log("SEC filings failed:", filingsRes.status);
+      console.log("SEC DEBUG: Filings fetch failed:", filingsRes.status);
       return null;
     }
 
     const filingsData = await filingsRes.json();
     const recent = filingsData.filings?.recent;
     if (!recent) {
-      console.log("SEC EDGAR: no recent filings");
+      console.log("SEC DEBUG: No recent filings data found");
       return null;
     }
 
-    // Filter Form 4s from last 90 days, cap at 10
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 90);
     const cutoffStr = cutoffDate.toISOString().split("T")[0];
 
     const form4Indices = [];
     for (let i = 0; i < recent.form.length && form4Indices.length < 10; i++) {
-      if (recent.form[i] === "4" && recent.filingDate[i] >= cutoffStr) {
-        form4Indices.push(i);
+      if (recent.form[i] === "4") {
+        console.log(`SEC DEBUG: Found Form 4 on ${recent.filingDate[i]}. (Cutoff is ${cutoffStr})`);
+        
+        if (recent.filingDate[i] >= cutoffStr) {
+          form4Indices.push(i);
+        }
       }
     }
 
     if (form4Indices.length === 0) {
-      console.log("SEC EDGAR: no Form 4s in last 90 days for", ticker);
+      console.log(`SEC DEBUG: 0 Form 4s passed the 90-day filter for ${ticker}`);
       return { transactions: [], filingCount: 0 };
     }
 
-    console.log("SEC EDGAR: found", form4Indices.length, "Form 4s for", ticker);
-
     // Step 3: Fetch and parse each Form 4 XML
-    const accessionNums = form4Indices.map(i =>
-      recent.accessionNumber[i].replace(/-/g, "")
-    );
+    const accessionNums = form4Indices.map(i => recent.accessionNumber[i].replace(/-/g, ""));
     const primaryDocs = form4Indices.map(i => recent.primaryDocument[i]);
-
     const transactions = [];
 
     for (let j = 0; j < accessionNums.length; j++) {
@@ -362,64 +357,43 @@ async function getInsiderData(ticker) {
         if (!xmlRes.ok) continue;
 
         const xmlText = await xmlRes.text();
-
-        // Parse insider name
         const nameMatch = xmlText.match(/<rptOwnerName>(.*?)<\/rptOwnerName>/);
         const name = nameMatch ? nameMatch[1].trim() : "Unknown";
-
-        // Parse insider title
         const titleMatch = xmlText.match(/<officerTitle>(.*?)<\/officerTitle>/);
         const title = titleMatch ? titleMatch[1].trim() : "";
 
-        // Parse if officer/director
-        const isOfficer = /<isOfficer>true<\/isOfficer>/i.test(xmlText) ||
-                          /<isOfficer>1<\/isOfficer>/.test(xmlText);
-        const isDirector = /<isDirector>true<\/isDirector>/i.test(xmlText) ||
-                           /<isDirector>1<\/isDirector>/.test(xmlText);
+        const isOfficer = /<isOfficer>true<\/isOfficer>|1/i.test(xmlText);
+        const isDirector = /<isDirector>true<\/isDirector>|1/i.test(xmlText);
 
-        // Parse all non-derivative transactions
         const txnRegex = /<nonDerivativeTransaction>([\s\S]*?)<\/nonDerivativeTransaction>/g;
         let txnMatch;
         while ((txnMatch = txnRegex.exec(xmlText)) !== null) {
           const txn = txnMatch[1];
-
-          // A = acquire/purchase, D = dispose/sell
           const codeMatch = txn.match(/<transactionCode>(.*?)<\/transactionCode>/);
           const code = codeMatch ? codeMatch[1].trim() : "";
 
-          // Skip non-open-market transactions (gifts, exercises, etc.)
-          // P = purchase, S = sale on open market
+          // Only P (Purchase) or S (Sale)
           if (code !== "P" && code !== "S") continue;
 
           const sharesMatch = txn.match(/<transactionShares>[\s\S]*?<value>(.*?)<\/value>/);
           const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
-
           const priceMatch = txn.match(/<transactionPricePerShare>[\s\S]*?<value>(.*?)<\/value>/);
           const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
-
           const dateMatch = txn.match(/<transactionDate>[\s\S]*?<value>(.*?)<\/value>/);
           const date = dateMatch ? dateMatch[1].trim() : "";
 
           transactions.push({
-            name,
-            title,
-            isOfficer,
-            isDirector,
-            code,
+            name, title, isOfficer, isDirector, code,
             type: code === "P" ? "BUY" : "SELL",
-            shares,
-            price,
-            value: Math.round(shares * price),
-            date,
+            shares, price, value: Math.round(shares * price), date,
           });
         }
       } catch (xmlErr) {
-        console.log("SEC EDGAR: XML parse error for filing", j, ":", xmlErr.message);
-        continue;
+        console.log(`SEC DEBUG: XML parse error for filing ${j}:`, xmlErr.message);
       }
     }
 
-    console.log("SEC EDGAR: parsed", transactions.length, "open-market transactions for", ticker);
+    console.log(`SEC DEBUG: Final count - parsed ${transactions.length} transactions for ${ticker}`);
     return { transactions, filingCount: form4Indices.length };
 
   } catch (err) {
