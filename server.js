@@ -4,11 +4,10 @@ const cors = require("cors");
 const app = express();
 app.use(cors());
 app.use(express.json());
-console.log("ENV CHECK — FMP key exists:", !!process.env.FMP_API_KEY, "Gemini key exists:", !!process.env.GEMINI_API_KEY);
 
 // --- API keys from environment variables ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const FMP_API_KEY = process.env.FMP_API_KEY || "IivcXUTKUaJEGzXdnhQgwyuzSB7HYoHe";
+const FMP_API_KEY = process.env.FMP_API_KEY;
 
 // --- Fetch real stock data from FMP ---
 async function getStockData(ticker) {
@@ -124,6 +123,53 @@ CRITICAL: Respond ONLY with valid JSON. No markdown, no backticks, no explanatio
 {"fundamental":0,"catalyst":0,"sentiment":0,"risk":0,"insider":0,"direction":"LONG","currentPrice":0.00,"targetPrice":0.00,"horizon":"1-2 months","companyName":"Company Name","rationale":"one sentence"}`;
 }
 
+// --- Rules-based Financial Health scoring ---
+function calcFinancialHealth(stockData) {
+  let score = 0;
+
+  // Market Cap (40 points max)
+  const cap = stockData.marketCap;
+  if (cap > 200e9) score += 40;        // Mega cap
+  else if (cap > 10e9) score += 30;    // Large cap
+  else if (cap > 2e9) score += 20;     // Mid cap
+  else if (cap > 300e6) score += 12;   // Small cap
+  else score += 5;                      // Micro cap
+
+  // Beta - volatility (30 points max)
+  const beta = stockData.beta;
+  if (beta !== null && beta !== undefined) {
+    if (beta < 0.8) score += 30;
+    else if (beta <= 1.2) score += 25;
+    else if (beta <= 1.8) score += 15;
+    else score += 8;
+  } else {
+    score += 15; // Unknown beta, neutral
+  }
+
+  // 52-week range position (30 points max)
+  const range = stockData.range;
+  if (range) {
+    const parts = range.split("-").map(s => parseFloat(s.trim()));
+    if (parts.length === 2 && parts[1] > parts[0]) {
+      const low = parts[0];
+      const high = parts[1];
+      const position = (stockData.price - low) / (high - low);
+
+      if (position >= 0.4 && position <= 0.7) score += 30;       // Healthy middle
+      else if (position > 0.7 && position <= 0.85) score += 25;  // Upper range
+      else if (position >= 0.25 && position < 0.4) score += 20;  // Lower-middle
+      else if (position > 0.85) score += 15;                      // Near highs
+      else score += 10;                                            // Near lows
+    } else {
+      score += 15; // Can't parse range, neutral
+    }
+  } else {
+    score += 15; // No range data, neutral
+  }
+
+  return Math.min(100, Math.max(0, score));
+}
+
 // --- API endpoint ---
 app.post("/api/analyze", async (req, res) => {
   const { ticker } = req.body;
@@ -183,6 +229,14 @@ app.post("/api/analyze", async (req, res) => {
     // ALWAYS use FMP price if available — override whatever Gemini says
     const currentPrice = stockData?.price || scores.currentPrice;
     console.log("Final price:", currentPrice, "(FMP:", stockData?.price, "Gemini:", scores.currentPrice, ")");
+
+    // --- Rules-based Financial Health score ---
+    // Override Gemini's fundamental score with data-driven score when FMP data available
+    if (stockData) {
+      const fundamentalScore = calcFinancialHealth(stockData);
+      console.log("Rules-based Financial Health:", fundamentalScore, "(Gemini was:", scores.fundamental, ")");
+      scores.fundamental = fundamentalScore;
+    }
 
     // Compute overall score
     const overall = Math.round(
