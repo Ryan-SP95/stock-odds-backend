@@ -7,7 +7,7 @@ app.use(express.json());
 
 // --- API keys from environment variables ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const FMP_API_KEY = process.env.FMP_API_KEY;
+const FMP_API_KEY = process.env.FMP_API_KEY || "IivcXUTKUaJEGzXdnhQgwyuzSB7HYoHe";
 
 // --- Fetch real stock data from FMP ---
 async function getStockData(ticker) {
