@@ -372,8 +372,8 @@ async function getInsiderData(ticker) {
           const codeMatch = txn.match(/<transactionCode>(.*?)<\/transactionCode>/);
           const code = codeMatch ? codeMatch[1].trim() : "";
 
-          // Only P (Purchase) or S (Sale)
-          if (code !== "P" && code !== "S") continue;
+          // This allows Purchases, Sales, AND Awards/Grants
+          if (code !== "P" && code !== "S" && code !== "A") continue;
 
           const sharesMatch = txn.match(/<transactionShares>[\s\S]*?<value>(.*?)<\/value>/);
           const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
