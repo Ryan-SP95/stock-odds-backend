@@ -275,7 +275,7 @@ function calcRiskAssessment(stockData) {
 // --- Fetch insider data from SEC EDGAR ---
 // Returns structured array of insider transactions from last 90 days
 async function getInsiderData(ticker) {
-  const SEC_UA = "TheOddsAlgo/1.1 (contact@theoddsalgo.com)";
+  const SEC_UA = "TheOddsAlgo/1.1 (ghost.cited.chronicals@gmail.com)";
   const headers = { "User-Agent": SEC_UA, "Accept": "application/json" };
 
   try {
