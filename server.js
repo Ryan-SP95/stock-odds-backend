@@ -373,7 +373,7 @@ async function getInsiderData(ticker) {
           const code = codeMatch ? codeMatch[1].trim() : "";
 
           // This allows Purchases, Sales, AND Awards/Grants
-          if (code !== "P" && code !== "S" && code !== "A") continue;
+          if (code !== "P" && code !== "S" && code !== "A" && code !== "M") continue;
 
           const sharesMatch = txn.match(/<transactionShares>[\s\S]*?<value>(.*?)<\/value>/);
           const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
@@ -600,6 +600,12 @@ app.post("/api/analyze", async (req, res) => {
       Math.max(51, overall + Math.round((Math.random() - 0.5) * 6))
     );
 
+    // Custom logic to explain why the insider score is neutral
+    let finalRationale = scores.rationale || "";
+    if (scores.insider === 50 && (!insiderData || insiderData.transactions.length === 0)) {
+      finalRationale = "No significant open-market insider buying or selling detected in the last 90 days. Sentiment is currently neutral.";
+    }
+
     // Return result
     const result = {
       ticker: t,
@@ -610,7 +616,7 @@ app.post("/api/analyze", async (req, res) => {
       horizon: scores.horizon,
       probability,
       overall,
-      rationale: scores.rationale || "",
+      rationale: finalRationale, // Use the new explanation here
       scores: {
         fundamental: scores.fundamental,
         catalyst: scores.catalyst,
