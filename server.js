@@ -272,6 +272,266 @@ function calcRiskAssessment(stockData) {
   return finalScore;
 }
 
+// --- Fetch insider data from SEC EDGAR ---
+// Returns structured array of insider transactions from last 90 days
+async function getInsiderData(ticker) {
+  const SEC_UA = "TheOddsAlgo/1.1 (contact@theoddsalgo.com)";
+  const headers = { "User-Agent": SEC_UA, "Accept": "application/json" };
+
+  try {
+    // Step 1: Get CIK from ticker
+    const tickerMapRes = await fetch(
+      "https://www.sec.gov/files/company_tickers.json",
+      { headers }
+    );
+    if (!tickerMapRes.ok) {
+      console.log("SEC ticker map failed:", tickerMapRes.status);
+      return null;
+    }
+
+    const tickerMap = await tickerMapRes.json();
+    let cik = null;
+    const upperTicker = ticker.toUpperCase();
+
+    for (const key in tickerMap) {
+      if (tickerMap[key].ticker === upperTicker) {
+        cik = String(tickerMap[key].cik_str);
+        break;
+      }
+    }
+
+    if (!cik) {
+      console.log("SEC EDGAR: no CIK found for", ticker);
+      return null;
+    }
+
+    const paddedCik = cik.padStart(10, "0");
+    console.log("SEC EDGAR: CIK for", ticker, "=", paddedCik);
+
+    // Step 2: Get recent filings
+    const filingsRes = await fetch(
+      `https://data.sec.gov/submissions/CIK${paddedCik}.json`,
+      { headers }
+    );
+    if (!filingsRes.ok) {
+      console.log("SEC filings failed:", filingsRes.status);
+      return null;
+    }
+
+    const filingsData = await filingsRes.json();
+    const recent = filingsData.filings?.recent;
+    if (!recent) {
+      console.log("SEC EDGAR: no recent filings");
+      return null;
+    }
+
+    // Filter Form 4s from last 90 days, cap at 10
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 90);
+    const cutoffStr = cutoffDate.toISOString().split("T")[0];
+
+    const form4Indices = [];
+    for (let i = 0; i < recent.form.length && form4Indices.length < 10; i++) {
+      if (recent.form[i] === "4" && recent.filingDate[i] >= cutoffStr) {
+        form4Indices.push(i);
+      }
+    }
+
+    if (form4Indices.length === 0) {
+      console.log("SEC EDGAR: no Form 4s in last 90 days for", ticker);
+      return { transactions: [], filingCount: 0 };
+    }
+
+    console.log("SEC EDGAR: found", form4Indices.length, "Form 4s for", ticker);
+
+    // Step 3: Fetch and parse each Form 4 XML
+    const accessionNums = form4Indices.map(i =>
+      recent.accessionNumber[i].replace(/-/g, "")
+    );
+    const primaryDocs = form4Indices.map(i => recent.primaryDocument[i]);
+
+    const transactions = [];
+
+    for (let j = 0; j < accessionNums.length; j++) {
+      try {
+        const xmlUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${accessionNums[j]}/${primaryDocs[j]}`;
+        const xmlRes = await fetch(xmlUrl, {
+          headers: { "User-Agent": SEC_UA, "Accept": "application/xml" }
+        });
+
+        if (!xmlRes.ok) continue;
+
+        const xmlText = await xmlRes.text();
+
+        // Parse insider name
+        const nameMatch = xmlText.match(/<rptOwnerName>(.*?)<\/rptOwnerName>/);
+        const name = nameMatch ? nameMatch[1].trim() : "Unknown";
+
+        // Parse insider title
+        const titleMatch = xmlText.match(/<officerTitle>(.*?)<\/officerTitle>/);
+        const title = titleMatch ? titleMatch[1].trim() : "";
+
+        // Parse if officer/director
+        const isOfficer = /<isOfficer>true<\/isOfficer>/i.test(xmlText) ||
+                          /<isOfficer>1<\/isOfficer>/.test(xmlText);
+        const isDirector = /<isDirector>true<\/isDirector>/i.test(xmlText) ||
+                           /<isDirector>1<\/isDirector>/.test(xmlText);
+
+        // Parse all non-derivative transactions
+        const txnRegex = /<nonDerivativeTransaction>([\s\S]*?)<\/nonDerivativeTransaction>/g;
+        let txnMatch;
+        while ((txnMatch = txnRegex.exec(xmlText)) !== null) {
+          const txn = txnMatch[1];
+
+          // A = acquire/purchase, D = dispose/sell
+          const codeMatch = txn.match(/<transactionCode>(.*?)<\/transactionCode>/);
+          const code = codeMatch ? codeMatch[1].trim() : "";
+
+          // Skip non-open-market transactions (gifts, exercises, etc.)
+          // P = purchase, S = sale on open market
+          if (code !== "P" && code !== "S") continue;
+
+          const sharesMatch = txn.match(/<transactionShares>[\s\S]*?<value>(.*?)<\/value>/);
+          const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
+
+          const priceMatch = txn.match(/<transactionPricePerShare>[\s\S]*?<value>(.*?)<\/value>/);
+          const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
+
+          const dateMatch = txn.match(/<transactionDate>[\s\S]*?<value>(.*?)<\/value>/);
+          const date = dateMatch ? dateMatch[1].trim() : "";
+
+          transactions.push({
+            name,
+            title,
+            isOfficer,
+            isDirector,
+            code,
+            type: code === "P" ? "BUY" : "SELL",
+            shares,
+            price,
+            value: Math.round(shares * price),
+            date,
+          });
+        }
+      } catch (xmlErr) {
+        console.log("SEC EDGAR: XML parse error for filing", j, ":", xmlErr.message);
+        continue;
+      }
+    }
+
+    console.log("SEC EDGAR: parsed", transactions.length, "open-market transactions for", ticker);
+    return { transactions, filingCount: form4Indices.length };
+
+  } catch (err) {
+    console.error("SEC EDGAR error:", err.message);
+    return null;
+  }
+}
+
+// --- Rules-based Insider Activity scoring ---
+// 100 = strong buy signal, 1 = strong sell signal, 50 = neutral
+function calcInsiderActivity(insiderData) {
+  // No data — return neutral
+  if (!insiderData || !insiderData.transactions || insiderData.transactions.length === 0) {
+    console.log("Insider Activity: no transactions, defaulting to 50");
+    return 50;
+  }
+
+  const txns = insiderData.transactions;
+  let factors = [];
+
+  // Count buys vs sells
+  const buys = txns.filter(t => t.type === "BUY");
+  const sells = txns.filter(t => t.type === "SELL");
+
+  const buyCount = buys.length;
+  const sellCount = sells.length;
+  const buyValue = buys.reduce((sum, t) => sum + t.value, 0);
+  const sellValue = sells.reduce((sum, t) => sum + t.value, 0);
+
+  // Check for C-suite involvement (CEO, CFO, COO, President, Chairman)
+  const cSuitePattern = /ceo|cfo|coo|chief|president|chairman/i;
+  const cSuiteBuys = buys.filter(t => cSuitePattern.test(t.title));
+  const cSuiteSells = sells.filter(t => cSuitePattern.test(t.title));
+
+  // --- Scoring logic ---
+  let score = 50; // Start neutral
+
+  // Buy/sell ratio shift
+  if (buyCount > 0 && sellCount === 0) {
+    score += 20; // Only buying, no selling
+    factors.push("pure buys: +20");
+  } else if (sellCount > 0 && buyCount === 0) {
+    score -= 15; // Only selling, no buying
+    factors.push("pure sells: -15");
+  } else if (buyCount > 0 && sellCount > 0) {
+    const ratio = buyValue / (buyValue + sellValue);
+    if (ratio > 0.7) {
+      score += 12;
+      factors.push("buy-heavy ratio: +12");
+    } else if (ratio < 0.3) {
+      score -= 10;
+      factors.push("sell-heavy ratio: -10");
+    }
+  }
+
+  // Cluster buying (3+ unique insiders buying)
+  const uniqueBuyers = new Set(buys.map(t => t.name)).size;
+  if (uniqueBuyers >= 3) {
+    score += 20;
+    factors.push("cluster buying (" + uniqueBuyers + " insiders): +20");
+  } else if (uniqueBuyers === 2) {
+    score += 10;
+    factors.push("2 buyers: +10");
+  }
+
+  // Cluster selling (3+ unique insiders selling)
+  const uniqueSellers = new Set(sells.map(t => t.name)).size;
+  if (uniqueSellers >= 3) {
+    score -= 15;
+    factors.push("cluster selling (" + uniqueSellers + " insiders): -15");
+  }
+
+  // C-suite buys (strong signal)
+  if (cSuiteBuys.length > 0) {
+    score += 15;
+    factors.push("C-suite buying: +15");
+  }
+
+  // C-suite sells (moderate negative signal)
+  if (cSuiteSells.length > 0) {
+    score -= 8;
+    factors.push("C-suite selling: -8");
+  }
+
+  // Large buy value (>$500k total)
+  if (buyValue > 500000) {
+    score += 8;
+    factors.push("buy value $" + (buyValue / 1000).toFixed(0) + "k: +8");
+  }
+
+  // Large sell value (>$5M total — common for planned sales)
+  if (sellValue > 5000000) {
+    score -= 5;
+    factors.push("sell value $" + (sellValue / 1000000).toFixed(1) + "M: -5");
+  }
+
+  const finalScore = Math.min(100, Math.max(1, score));
+  console.log("Insider Activity breakdown:", factors.join(" | "), "=", finalScore,
+    "(" + buyCount + " buys / " + sellCount + " sells)");
+  return finalScore;
+}
+
+// Helper functions for dates
+function getTodayDate() {
+  return new Date().toISOString().split("T")[0];
+}
+function getDateDaysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split("T")[0];
+}
+
 // --- API endpoint ---
 app.post("/api/analyze", async (req, res) => {
   const { ticker } = req.body;
@@ -328,9 +588,33 @@ app.post("/api/analyze", async (req, res) => {
 
     const scores = JSON.parse(jsonMatch[0]);
 
+    const currentPrice = stockData?.price || scores.currentPrice;
+    console.log("Final price:", currentPrice);
+
+    // --- Insider Activity from SEC EDGAR (independent of FMP) ---
+    const insiderData = await getInsiderData(t);
+    if (insiderData) {
+      const insiderScore = calcInsiderActivity(insiderData);
+      console.log("Rules-based Insider Activity:", insiderScore, "(Gemini was:", scores.insider, ")");
+      scores.insider = insiderScore;
+    }
+
+    // --- Rules-based score overrides when FMP data available ---
+    if (stockData) {
+      const fundamentalScore = calcFinancialHealth(stockData);
+      ...
+
     // ALWAYS use FMP price if available — override whatever Gemini says
     const currentPrice = stockData?.price || scores.currentPrice;
     console.log("Final price:", currentPrice, "(FMP:", stockData?.price, "Gemini:", scores.currentPrice, ")");
+
+    // --- Insider Activity from SEC EDGAR (independent of FMP) ---
+    const insiderData = await getInsiderData(t);
+    if (insiderData) {
+      const insiderScore = calcInsiderActivity(insiderData);
+      console.log("Rules-based Insider Activity:", insiderScore, "(Gemini was:", scores.insider, ")");
+      scores.insider = insiderScore;
+    }
     
     // --- Rules-based score overrides when FMP data available ---
     if (stockData) {
@@ -389,11 +673,11 @@ app.post("/api/analyze", async (req, res) => {
 
 // --- Health check ---
 app.get("/", (req, res) => {
-  res.json({ status: "Stock Odds API is running", version: "1.1.0" });
+  res.json({ status: "Stock Odds API is running", version: "1.2.0" });
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Stock Odds API v1.1.0 running on port ${PORT}`);
-  console.log("Rules-based scoring: Financial Health + Risk Assessment");
+  console.log(`Stock Odds API v1.2.0 running on port ${PORT}`);
+  console.log("Rules-based scoring: Financial Health + Risk Assessment + Insider Activity");
 });
