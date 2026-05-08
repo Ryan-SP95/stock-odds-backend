@@ -585,47 +585,31 @@ app.post("/api/analyze", async (req, res) => {
       console.error("Could not parse Gemini response:", cleaned.slice(0, 300));
       return res.status(500).json({ error: "Could not parse AI response" });
     }
-
     const scores = JSON.parse(jsonMatch[0]);
 
+    // Determine Final Price (Prioritize FMP data over Gemini)
     const currentPrice = stockData?.price || scores.currentPrice;
     console.log("Final price:", currentPrice);
 
-    // --- Insider Activity from SEC EDGAR (independent of FMP) ---
-    const insiderData = await getInsiderData(t);
-    if (insiderData) {
-      const insiderScore = calcInsiderActivity(insiderData);
-      console.log("Rules-based Insider Activity:", insiderScore, "(Gemini was:", scores.insider, ")");
-      scores.insider = insiderScore;
-    }
-
-    // --- Rules-based score overrides when FMP data available ---
+    // Rules-based score overrides (If real stock data exists)
     if (stockData) {
-      const fundamentalScore = calcFinancialHealth(stockData);
-      ...
-
-    // ALWAYS use FMP price if available — override whatever Gemini says
-    const currentPrice = stockData?.price || scores.currentPrice;
-    console.log("Final price:", currentPrice, "(FMP:", stockData?.price, "Gemini:", scores.currentPrice, ")");
-
-    // --- Insider Activity from SEC EDGAR (independent of FMP) ---
-    const insiderData = await getInsiderData(t);
-    if (insiderData) {
-      const insiderScore = calcInsiderActivity(insiderData);
-      console.log("Rules-based Insider Activity:", insiderScore, "(Gemini was:", scores.insider, ")");
-      scores.insider = insiderScore;
-    }
-    
-    // --- Rules-based score overrides when FMP data available ---
-    if (stockData) {
+      // Financial Health override
       const fundamentalScore = calcFinancialHealth(stockData);
       console.log("Rules-based Financial Health:", fundamentalScore, "(Gemini was:", scores.fundamental, ")");
       scores.fundamental = fundamentalScore;
 
-      // Risk Assessment (rules-based)
+      // Risk Assessment override
       const riskScore = calcRiskAssessment(stockData);
       console.log("Rules-based Risk Assessment:", riskScore, "(Gemini was:", scores.risk, ")");
       scores.risk = riskScore;
+    }
+
+    // Insider Activity override (Independent of FMP)
+    const insiderData = await getInsiderData(t);
+    if (insiderData) {
+      const insiderScore = calcInsiderActivity(insiderData);
+      console.log("Rules-based Insider Activity:", insiderScore, "(Gemini was:", scores.insider, ")");
+      scores.insider = insiderScore;
     }
 
     // Compute overall score
