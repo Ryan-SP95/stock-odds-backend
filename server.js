@@ -605,7 +605,7 @@ app.post("/api/analyze", async (req, res) => {
     if (scores.insider === 50 && (!insiderData || insiderData.transactions.length === 0)) {
       finalRationale = "No significant open-market insider buying or selling detected in the last 90 days. Sentiment is currently neutral.";
     }
-
+    
     // Return result
     const result = {
       ticker: t,
