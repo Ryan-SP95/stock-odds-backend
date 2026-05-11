@@ -147,6 +147,7 @@ function calcFinancialHealth(stockData) {
   }
 
   // 52-week range position (30 points max)
+  // Higher = stronger momentum = higher score
   const range = stockData.range;
   if (range) {
     const parts = range.split("-").map(s => parseFloat(s.trim()));
@@ -155,11 +156,11 @@ function calcFinancialHealth(stockData) {
       const high = parts[1];
       const position = (stockData.price - low) / (high - low);
 
-      if (position >= 0.4 && position <= 0.7) score += 30;       // Healthy middle
-      else if (position > 0.7 && position <= 0.85) score += 25;  // Upper range
-      else if (position >= 0.25 && position < 0.4) score += 20;  // Lower-middle
-      else if (position > 0.85) score += 15;                      // Near highs
-      else score += 10;                                            // Near lows
+      if (position > 0.85) score += 30;                           // Near highs — strong momentum
+      else if (position > 0.7) score += 25;                       // Upper range — bullish
+      else if (position >= 0.4) score += 20;                      // Middle range — neutral
+      else if (position >= 0.25) score += 12;                     // Lower-middle — weak
+      else score += 5;                                             // Near lows — distressed
     } else {
       score += 15; // Can't parse range, neutral
     }
@@ -219,7 +220,8 @@ function calcRiskAssessment(stockData) {
     factors.push("earnings unknown: +14");
   }
 
-  // 3. 52-Week Overextension - 20 points max
+  // 3. 52-Week Position - 20 points max
+  // Higher position = confirmed uptrend = lower risk
   const range = stockData.range;
   if (range) {
     const parts = range.split("-").map(s => parseFloat(s.trim()));
@@ -228,11 +230,11 @@ function calcRiskAssessment(stockData) {
       const high = parts[1];
       const position = (stockData.price - low) / (high - low);
 
-      if (position >= 0.3 && position <= 0.7)       { score += 20; factors.push("52w " + (position * 100).toFixed(0) + "% mid: +20"); }
-      else if (position > 0.7 && position <= 0.85)  { score += 14; factors.push("52w " + (position * 100).toFixed(0) + "% upper: +14"); }
-      else if (position >= 0.15 && position < 0.3)  { score += 12; factors.push("52w " + (position * 100).toFixed(0) + "% lower: +12"); }
-      else if (position > 0.85)                      { score += 8;  factors.push("52w " + (position * 100).toFixed(0) + "% near-high: +8"); }
-      else                                            { score += 6;  factors.push("52w " + (position * 100).toFixed(0) + "% near-low: +6"); }
+      if (position > 0.85)                                        { score += 20; factors.push("52w " + (position * 100).toFixed(0) + "% near-high: +20"); }
+      else if (position > 0.7 && position <= 0.85)               { score += 16; factors.push("52w " + (position * 100).toFixed(0) + "% upper: +16"); }
+      else if (position >= 0.3 && position <= 0.7)               { score += 12; factors.push("52w " + (position * 100).toFixed(0) + "% mid: +12"); }
+      else if (position >= 0.15 && position < 0.3)               { score += 6;  factors.push("52w " + (position * 100).toFixed(0) + "% lower: +6"); }
+      else                                                         { score += 2;  factors.push("52w " + (position * 100).toFixed(0) + "% near-low: +2"); }
     } else {
       score += 10; factors.push("52w unparseable: +10");
     }
@@ -637,11 +639,11 @@ app.post("/api/analyze", async (req, res) => {
 
 // --- Health check ---
 app.get("/", (req, res) => {
-  res.json({ status: "Stock Odds API is running", version: "1.2.0" });
+  res.json({ status: "Stock Odds API is running", version: "1.3.0" });
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Stock Odds API v1.2.0 running on port ${PORT}`);
+  console.log(`Stock Odds API v1.3.0 running on port ${PORT}`);
   console.log("Rules-based scoring: Financial Health + Risk Assessment + Insider Activity");
 });
