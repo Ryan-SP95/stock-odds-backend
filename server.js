@@ -608,6 +608,11 @@ app.post("/api/analyze", async (req, res) => {
     if (scores.insider === 50 && (!insiderData || insiderData.transactions.length === 0)) {
       finalRationale = "No significant open-market insider buying or selling detected in the last 90 days. Sentiment is currently neutral.";
     }
+
+    // Stop price = entry - half the distance to target (2:1 R/R floor)
+    const stopPrice = currentPrice && scores.targetPrice
+      ? parseFloat((currentPrice - Math.abs(scores.targetPrice - currentPrice) / 2).toFixed(4))
+      : null;
     
     // Return result
     const result = {
@@ -617,6 +622,7 @@ app.post("/api/analyze", async (req, res) => {
       currentPrice: currentPrice,
       targetPrice: scores.targetPrice,
       horizon: scores.horizon,
+      stopPrice: stopPrice,
       probability,
       overall,
       rationale: finalRationale, // Use the new explanation here
@@ -646,6 +652,7 @@ app.post("/api/analyze", async (req, res) => {
       current_price: result.currentPrice,
       target_price:  result.targetPrice,
       horizon:       result.horizon,
+      stop_price: stopPrice,
     }).then(({ error }) => {
       if (error) console.error('Supabase log error:', error.message);
       else console.log('Prediction logged:', t, result.direction, result.overall);
