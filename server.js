@@ -124,51 +124,46 @@ CRITICAL: Respond ONLY with valid JSON. No markdown, no backticks, no explanatio
 }
 
 // --- Rules-based Financial Health scoring ---
+// 100 points max: MarketCap(40) + VolumeStrength(30) + DividendSignal(30)
+// NOTE: Beta and 52-week position removed — both live in calcRiskAssessment()
 function calcFinancialHealth(stockData) {
   let score = 0;
+  let factors = [];
 
-  // Market Cap (40 points max)
+  // 1. Market Cap — 40 points max
+  // Larger companies have more financial stability and access to capital
   const cap = stockData.marketCap;
-  if (cap > 200e9) score += 40;        // Mega cap
-  else if (cap > 10e9) score += 30;    // Large cap
-  else if (cap > 2e9) score += 20;     // Mid cap
-  else if (cap > 300e6) score += 12;   // Small cap
-  else score += 5;                      // Micro cap
+  if (cap > 200e9)      { score += 40; factors.push("megacap: +40"); }
+  else if (cap > 10e9)  { score += 30; factors.push("large cap: +30"); }
+  else if (cap > 2e9)   { score += 20; factors.push("mid cap: +20"); }
+  else if (cap > 300e6) { score += 12; factors.push("small cap: +12"); }
+  else                   { score += 5;  factors.push("micro cap: +5"); }
 
-  // Beta - volatility (30 points max)
-  const beta = stockData.beta;
-  if (beta !== null && beta !== undefined) {
-    if (beta < 0.8) score += 30;
-    else if (beta <= 1.2) score += 25;
-    else if (beta <= 1.8) score += 15;
-    else score += 8;
-  } else {
-    score += 15; // Unknown beta, neutral
-  }
+  // 2. Average Volume — 30 points max
+  // High volume = institutional participation + liquidity = financial credibility
+  const vol = stockData.volAvg;
+  if (vol > 10000000)      { score += 30; factors.push("vol >10M: +30"); }
+  else if (vol > 3000000)  { score += 25; factors.push("vol >3M: +25"); }
+  else if (vol > 1000000)  { score += 20; factors.push("vol >1M: +20"); }
+  else if (vol > 300000)   { score += 12; factors.push("vol >300k: +12"); }
+  else if (vol > 50000)    { score += 6;  factors.push("vol >50k: +6"); }
+  else if (vol)            { score += 2;  factors.push("vol low: +2"); }
+  else                      { score += 10; factors.push("vol unknown: +10"); }
 
-  // 52-week range position (30 points max)
-  // Higher = stronger momentum = higher score
-  const range = stockData.range;
-  if (range) {
-    const parts = range.split("-").map(s => parseFloat(s.trim()));
-    if (parts.length === 2 && parts[1] > parts[0]) {
-      const low = parts[0];
-      const high = parts[1];
-      const position = (stockData.price - low) / (high - low);
+  // 3. Dividend Signal — 30 points max
+  // Paying a dividend signals profitability and cash generation discipline
+  // No dividend is neutral — many strong growth stocks don't pay dividends
+  const div = stockData.lastDividend;
+  if (div > 2.0)       { score += 30; factors.push("div $" + div.toFixed(2) + " high: +30"); }
+  else if (div > 1.0)  { score += 26; factors.push("div $" + div.toFixed(2) + ": +26"); }
+  else if (div > 0.5)  { score += 22; factors.push("div $" + div.toFixed(2) + ": +22"); }
+  else if (div > 0.1)  { score += 18; factors.push("div $" + div.toFixed(2) + " small: +18"); }
+  else if (div > 0)    { score += 14; factors.push("div $" + div.toFixed(2) + " token: +14"); }
+  else                  { score += 15; factors.push("no dividend (neutral): +15"); }
 
-      if (position > 0.85) score += 30;                           // Near highs — strong momentum
-      else if (position > 0.7) score += 25;                       // Upper range — bullish
-      else if (position >= 0.4) score += 20;                      // Middle range — neutral
-      else if (position >= 0.25) score += 12;                     // Lower-middle — weak
-      else score += 5;                                             // Near lows — distressed
-    } else {
-      score += 15; // Can't parse range, neutral
-    }
-  } else {
-    score += 15; // No range data, neutral
-  }
-
-  return Math.min(100, Math.max(0, score));
+  const finalScore = Math.min(100, Math.max(0, score));
+  console.log("Financial Health breakdown:", factors.join(" | "), "=", finalScore);
+  return finalScore;
 }
 
 // --- Rules-based Risk Assessment scoring ---
