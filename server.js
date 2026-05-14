@@ -9,6 +9,12 @@ app.use(express.json());
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FMP_API_KEY = process.env.FMP_API_KEY;
 
+const { createClient } = require('@supabase/supabase-js');
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
 // --- Fetch real stock data from FMP ---
 async function getStockData(ticker) {
   if (!FMP_API_KEY) {
