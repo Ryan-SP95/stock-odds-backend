@@ -630,13 +630,34 @@ app.post("/api/analyze", async (req, res) => {
     };
 
     console.log("--- Result for", t, ": price=$" + currentPrice, "direction=" + scores.direction, "---");
+
+    // Log prediction to Supabase (fire and forget — never blocks the response)
+    supabase.from('predictions').insert({
+      ticker:        t,
+      company_name:  result.companyName,
+      direction:     result.direction,
+      overall_score: result.overall,
+      probability:   result.probability,
+      fundamental:   result.scores.fundamental,
+      catalyst:      result.scores.catalyst,
+      sentiment:     result.scores.sentiment,
+      risk:          result.scores.risk,
+      insider:       result.scores.insider,
+      current_price: result.currentPrice,
+      target_price:  result.targetPrice,
+      horizon:       result.horizon,
+    }).then(({ error }) => {
+      if (error) console.error('Supabase log error:', error.message);
+      else console.log('Prediction logged:', t, result.direction, result.overall);
+    });
+    
     res.json(result);
 
-  } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ error: "Something went wrong" });
-  }
-});
+    } catch (err) {
+      console.error("Server error:", err);
+      res.status(500).json({ error: "Something went wrong" });
+    }
+  });
 
 // --- Health check ---
 app.get("/", (req, res) => {
