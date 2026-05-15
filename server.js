@@ -8,6 +8,7 @@ app.use(express.json());
 // --- API keys from environment variables ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FMP_API_KEY = process.env.FMP_API_KEY;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(
@@ -61,6 +62,26 @@ async function getStockData(ticker) {
       console.log("FMP earnings failed (non-critical):", e.message);
     }
 
+    // EPS Surprise — gives us catalyst clarity signal
+    let epsSurprise = null;
+    try {
+      const epsRes = await fetch(
+        `https://financialmodelingprep.com/stable/earnings-surprises?symbol=${ticker}&apikey=${FMP_API_KEY}`
+      );
+      if (epsRes.ok) {
+        const epsData = await epsRes.json();
+        if (Array.isArray(epsData) && epsData.length > 0) {
+          const latest = epsData[0];
+          if (latest.actualEarningResult != null && latest.estimatedEarning != null && latest.estimatedEarning !== 0) {
+            epsSurprise = ((latest.actualEarningResult - latest.estimatedEarning) / Math.abs(latest.estimatedEarning)) * 100;
+            console.log("FMP EPS surprise for", ticker, ":", epsSurprise.toFixed(2) + "%");
+          }
+        }
+      }
+    } catch (e) {
+      console.log("FMP EPS surprise failed (non-critical):", e.message);
+    }
+    
     return {
       companyName: profile.companyName,
       price: profile.price,
@@ -74,6 +95,7 @@ async function getStockData(ticker) {
       change: profile.change,
       changePercent: profile.changePercent || profile.changesPercentage,
       earnings: earnings,
+      epsSurprise: epsSurprise,
     };
   } catch (err) {
     console.error("FMP error:", err.message);
@@ -499,6 +521,85 @@ function calcInsiderActivity(insiderData) {
   return finalScore;
 }
 
+// --- Rules-based Catalyst Clarity scoring (FMP EPS Surprise) ---
+// 100 = strong beat, 50 = neutral/no data, 1 = heavy miss
+function calcCatalystClarity(stockData) {
+  if (!stockData || stockData.epsSurprise == null) {
+    console.log("Catalyst Clarity: no EPS surprise data, defaulting to 50");
+    return 50;
+  }
+
+  const surprise = stockData.epsSurprise;
+  let score, label;
+
+  if (surprise > 20)       { score = 90; label = "strong beat >" + surprise.toFixed(1) + "%"; }
+  else if (surprise > 10)  { score = 78; label = "solid beat " + surprise.toFixed(1) + "%"; }
+  else if (surprise > 3)   { score = 65; label = "modest beat " + surprise.toFixed(1) + "%"; }
+  else if (surprise > 0)   { score = 55; label = "slight beat " + surprise.toFixed(1) + "%"; }
+  else if (surprise > -3)  { score = 45; label = "slight miss " + surprise.toFixed(1) + "%"; }
+  else if (surprise > -10) { score = 35; label = "modest miss " + surprise.toFixed(1) + "%"; }
+  else if (surprise > -20) { score = 22; label = "heavy miss " + surprise.toFixed(1) + "%"; }
+  else                      { score = 10; label = "severe miss " + surprise.toFixed(1) + "%"; }
+
+  console.log("Catalyst Clarity:", label, "=", score);
+  return score;
+}
+
+// --- Rules-based Sentiment & Momentum scoring (Finnhub analyst revisions) ---
+// 100 = heavy upgrades, 50 = neutral/no data, 1 = heavy downgrades
+async function calcSentimentMomentum(ticker) {
+  if (!FINNHUB_API_KEY) {
+    console.log("Sentiment: no Finnhub key, defaulting to 50");
+    return 50;
+  }
+
+  try {
+    const res = await fetch(
+      `https://finnhub.io/api/v1/stock/recommendation?symbol=${ticker}&token=${FINNHUB_API_KEY}`
+    );
+
+    if (!res.ok) {
+      console.log("Finnhub failed:", res.status, "defaulting to 50");
+      return 50;
+    }
+
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      console.log("Sentiment: no Finnhub data, defaulting to 50");
+      return 50;
+    }
+
+    // Use the most recent month's data
+    const latest = data[0];
+    const strongBuy  = latest.strongBuy  || 0;
+    const buy        = latest.buy        || 0;
+    const hold       = latest.hold       || 0;
+    const sell       = latest.sell       || 0;
+    const strongSell = latest.strongSell || 0;
+
+    const totalAnalysts = strongBuy + buy + hold + sell + strongSell;
+    if (totalAnalysts === 0) {
+      console.log("Sentiment: zero analysts, defaulting to 50");
+      return 50;
+    }
+
+    // Weighted score: strongBuy=1.0, buy=0.75, hold=0.5, sell=0.25, strongSell=0
+    const weightedScore = (
+      (strongBuy * 1.0 + buy * 0.75 + hold * 0.5 + sell * 0.25 + strongSell * 0) / totalAnalysts
+    );
+
+    const score = Math.round(weightedScore * 100);
+    console.log("Sentiment & Momentum: Finnhub", totalAnalysts, "analysts |",
+      "SB:" + strongBuy, "B:" + buy, "H:" + hold, "S:" + sell, "SS:" + strongSell,
+      "= weighted", score);
+    return score;
+
+  } catch (err) {
+    console.log("Finnhub error:", err.message, "defaulting to 50");
+    return 50;
+  }
+}
+
 // Helper functions for dates
 function getTodayDate() {
   return new Date().toISOString().split("T")[0];
@@ -589,6 +690,18 @@ app.post("/api/analyze", async (req, res) => {
       scores.insider = insiderScore;
     }
 
+    // Catalyst Clarity override (FMP EPS Surprise)
+    if (stockData) {
+      const catalystScore = calcCatalystClarity(stockData);
+      console.log("Rules-based Catalyst Clarity:", catalystScore, "(Gemini was:", scores.catalyst, ")");
+      scores.catalyst = catalystScore;
+    }
+
+    // Sentiment & Momentum override (Finnhub analyst revisions)
+    const sentimentScore = await calcSentimentMomentum(t);
+    console.log("Rules-based Sentiment:", sentimentScore, "(Gemini was:", scores.sentiment, ")");
+    scores.sentiment = sentimentScore;
+    
     // Compute overall score
     const overall = Math.round(
       scores.fundamental * 0.25 +
