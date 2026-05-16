@@ -374,7 +374,8 @@ async function getInsiderData(ticker) {
 
     for (let j = 0; j < accessionNums.length; j++) {
       try {
-        const xmlUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${accessionNums[j]}/${primaryDocs[j]}`;
+        const primaryDoc = primaryDocs[j].replace(/^xslF345X\d+\//, "");
+        const xmlUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${accessionNums[j]}/${primaryDoc}`;
         console.log(`SEC DEBUG: Fetching XML from ${xmlUrl}`);
         const xmlRes = await fetch(xmlUrl, {
           headers: { "User-Agent": SEC_UA, "Accept": "application/xml" }
