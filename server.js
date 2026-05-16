@@ -370,7 +370,6 @@ async function getInsiderData(ticker) {
     // Step 3: Fetch and parse each Form 4 XML
     const accessionNums = form4Indices.map(i => recent.accessionNumber[i].replace(/-/g, ""));
     const primaryDocs = form4Indices.map(i => recent.primaryDocument[i]);
-    const transactions = [];
 
       const results = await Promise.all(accessionNums.map(async (accNum, j) => {
       try {
