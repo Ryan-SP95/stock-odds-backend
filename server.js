@@ -375,44 +375,53 @@ async function getInsiderData(ticker) {
     for (let j = 0; j < accessionNums.length; j++) {
       try {
         const xmlUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${accessionNums[j]}/${primaryDocs[j]}`;
+        console.log(`SEC DEBUG: Fetching XML from ${xmlUrl}`);
         const xmlRes = await fetch(xmlUrl, {
           headers: { "User-Agent": SEC_UA, "Accept": "application/xml" }
         });
-
-        if (!xmlRes.ok) continue;
-
+    
+        console.log(`SEC DEBUG: XML response status: ${xmlRes.status} for filing ${j}`);
+        if (!xmlRes.ok) {
+          console.log(`SEC DEBUG: XML fetch failed for filing ${j} — skipping`);
+          continue;
+        }
+    
         const xmlText = await xmlRes.text();
+        console.log(`SEC DEBUG: XML length: ${xmlText.length} chars, starts with: ${xmlText.slice(0, 80)}`);
+    
         const nameMatch = xmlText.match(/<rptOwnerName>(.*?)<\/rptOwnerName>/);
         const name = nameMatch ? nameMatch[1].trim() : "Unknown";
         const titleMatch = xmlText.match(/<officerTitle>(.*?)<\/officerTitle>/);
         const title = titleMatch ? titleMatch[1].trim() : "";
-
-        const isOfficer = /<isOfficer>true<\/isOfficer>|1/i.test(xmlText);
-        const isDirector = /<isDirector>true<\/isDirector>|1/i.test(xmlText);
-
+    
+        const isOfficer = /<isOfficer>1<\/isOfficer>/i.test(xmlText);
+        const isDirector = /<isDirector>1<\/isDirector>/i.test(xmlText);
+    
         const txnRegex = /<nonDerivativeTransaction>([\s\S]*?)<\/nonDerivativeTransaction>/g;
         let txnMatch;
+        let txnCount = 0;
         while ((txnMatch = txnRegex.exec(xmlText)) !== null) {
+          txnCount++;
           const txn = txnMatch[1];
           const codeMatch = txn.match(/<transactionCode>(.*?)<\/transactionCode>/);
           const code = codeMatch ? codeMatch[1].trim() : "";
-
-          // This allows Purchases, Sales, AND Awards/Grants
+    
           if (code !== "P" && code !== "S" && code !== "A" && code !== "M") continue;
-
+    
           const sharesMatch = txn.match(/<transactionShares>[\s\S]*?<value>(.*?)<\/value>/);
           const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
           const priceMatch = txn.match(/<transactionPricePerShare>[\s\S]*?<value>(.*?)<\/value>/);
           const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
           const dateMatch = txn.match(/<transactionDate>[\s\S]*?<value>(.*?)<\/value>/);
           const date = dateMatch ? dateMatch[1].trim() : "";
-
+    
           transactions.push({
             name, title, isOfficer, isDirector, code,
             type: code === "P" ? "BUY" : "SELL",
             shares, price, value: Math.round(shares * price), date,
           });
         }
+        console.log(`SEC DEBUG: Found ${txnCount} nonDerivativeTransaction blocks, ${transactions.length} valid transactions so far`);
       } catch (xmlErr) {
         console.log(`SEC DEBUG: XML parse error for filing ${j}:`, xmlErr.message);
       }
